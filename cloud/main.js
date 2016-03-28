@@ -10,7 +10,7 @@ Parse.Cloud.define("setUserCredits", function(request, response) {
     Parse.Cloud.useMasterKey();
 
     // Query for the user to be modified by username
-    // The username is passed to the Cloud Function in a
+    // The username is passed to the Cloud Function in ai
     // key named "username". You can search by email or
     // user id instead depending on your use case.
 
@@ -625,8 +625,6 @@ Parse.Cloud.afterSave(Parse.User, function(request) {
   }
 });
 
-var Image = require("parse-image");
-
 Parse.Cloud.beforeSave("_User", function(request, response) {
   var user = request.object;
   if (!user.get("image")) {
@@ -640,51 +638,54 @@ Parse.Cloud.beforeSave("_User", function(request, response) {
     return;
   }
 
-  Parse.Cloud.httpRequest({
-    url: user.get("image").url()
-
-  }).then(function(response) {
-    var image = new Image();
-    return image.setData(response.buffer);
-
-  }).then(function(image) {
-    // Crop the image to the smaller of width or height.
-    var size = Math.min(image.width(), image.height());
-    return image.crop({
-      left: (image.width() - size) / 2,
-      top: (image.height() - size) / 2,
-      width: size,
-      height: size
-    });
-
-  }).then(function(image) {
-    // Resize the image to 64x64.
-    return image.scale({
-      width: 392,
-      height: 392
-    });
-
-  }).then(function(image) {
-    // Make sure it's a JPEG to save disk space and bandwidth.
-    return image.setFormat("JPEG");
-
-  }).then(function(image) {
-    // Get the image data in a Buffer.
-    return image.data();
-
-  }).then(function(buffer) {
-    // Save the image into a new file.
-    var base64 = buffer.toString("base64");
-    var cropped = new Parse.File("profile.jpg", { base64: base64 });
-    return cropped.save();
-
-  }).then(function(cropped) {
-    // Attach the image file to the original object.
-    user.set("image", cropped);
-
+  createThumbnail(user.get("image").url(), 392, 392).then(function(shrunk) {
+      request.object.set("image", shrunk);
+      console.log("Thumbnail generated/added");
   }).then(function(result) {
-    response.success();
-  }, function(error) {
-    response.error(error);
+          response.success("thumbnail saved");
+      }, function(error) {
+          response.error("thumbnail creation error: " + error.code + "("+ error.message + ")");
   });
 });
+
+function createThumbnail(url, maxWidth, maxHeight){
+    var Jimp = require("jimp");
+    Parse.Cloud.useMasterKey();
+    if(url === ""){
+        console.log("url empty");
+        return;
+    }
+
+    console.log("Generating Thumbnail...");
+    return Jimp.read(url).then(function(image) {
+        console.log("Buffer read, resizing...");
+        var ratioX = maxWidth / image.bitmap.width; 
+        var ratioY = maxHeight / image.bitmap.height;
+        var ratio = Math.min(ratioX, ratioY);
+
+        var w = image.bitmap.width * ratio;
+        var h = image.bitmap.height * ratio;
+
+        return image.resize(w, h );
+    }).then(function(image) {
+        console.log("Resized, setting quality...");
+        return image.quality(90);
+    }).then(function(image) {
+        console.log("Quality set, return buffer");
+        var promise = new Parse.Promise();
+            image.getBuffer(Jimp.MIME_JPEG, function(err, buffer){
+                if (err) return promise.reject(err);
+                promise.resolve(buffer);
+            });
+        return promise;
+    }).then(function(buffer) {
+        console.log("Buffer returned, creating Parse File");
+        var shrunk = new Parse.File("profile.jpg", { base64: buffer }, "image/jpeg");
+        return shrunk.save();
+    }).then(function(shrunk) {
+            return shrunk;
+        }, function(error) {
+            console.log("thumbnail generation error: " + error.code + "("+ error.message + ")");
+            return;
+    });
+}
